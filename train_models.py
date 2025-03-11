@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import os
+import sys
 from torch.utils.data import DataLoader, TensorDataset
 from models.nbeatsx import NBeatsX
 from models.ctts import CTTS
@@ -11,7 +12,13 @@ from models.deepar import DeepAR
 from utils.preprocessing import prepare_data  # Data preparation function
 from training.hyperparameters import HPARAMS  # Load hyperparameters
 
-# Set device
+# 📌 Set script's directory as working directory
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+os.chdir(PROJECT_ROOT)  # Change working directory
+sys.path.append(PROJECT_ROOT)  # Ensure project modules can be imported
+
+# ✅ Set device (GPU if available)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def train_model(model, train_loader, criterion, optimizer, epochs=50):
@@ -43,6 +50,8 @@ def train_all_models(train_data, save_path="saved_models/"):
     """
     Trains N-BEATSx, CTTS, TFT, and DeepAR models.
     """
+    # 📌 Ensure correct save directory
+    save_path = os.path.join(PROJECT_ROOT, save_path)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -63,13 +72,14 @@ def train_all_models(train_data, save_path="saved_models/"):
     criterion = nn.MSELoss()
 
     for name, model in models.items():
-        print(f"\nTraining {name.upper()}...\n")
+        print(f"\n🚀 Training {name.upper()}...\n")
         optimizer = optim.Adam(model.parameters(), lr=HPARAMS["learning_rate"])
         trained_model = train_model(model, train_loader, criterion, optimizer, HPARAMS["epochs"])
         
         # Save model
-        torch.save(trained_model.state_dict(), os.path.join(save_path, f"{name}.pth"))
-        print(f"✅ Model {name} saved.")
+        model_save_path = os.path.join(save_path, f"{name}.pth")
+        torch.save(trained_model.state_dict(), model_save_path)
+        print(f"✅ Model {name} saved at {model_save_path}.")
 
 if __name__ == "__main__":
     from data.synthetic_data import generate_multiple_series
