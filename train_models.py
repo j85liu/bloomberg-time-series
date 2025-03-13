@@ -4,23 +4,29 @@ import torch.optim as optim
 import numpy as np
 import os
 import sys
+import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 from models.nbeatsx import NBeatsX
 from models.ctts import CTTS
 from models.tft import TemporalFusionTransformer
 from models.deepar import DeepAR
-from utils.preprocessing import prepare_data  # Data preparation function
-from training.hyperparameters import HPARAMS  # Load hyperparameters
+from utils.preprocessing import prepare_data
+from training.hyperparameters import HPARAMS
 
-# 📌 Set script's directory as working directory
+# ✅ Set working directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-os.chdir(PROJECT_ROOT)  # Change working directory
-sys.path.append(PROJECT_ROOT)  # Ensure project modules can be imported
+os.chdir(PROJECT_ROOT)
+sys.path.append(PROJECT_ROOT)
 
 # ✅ Set device (GPU if available)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ✅ Define data directory
+DATA_DIR = "data/synthetic"
+SAVE_DIR = "saved_models"
+
+# 🔹 Training function
 def train_model(model, train_loader, criterion, optimizer, epochs=50):
     """
     Trains a given model on time-series data.
@@ -46,42 +52,59 @@ def train_model(model, train_loader, criterion, optimizer, epochs=50):
 
     return model
 
-def train_all_models(train_data, save_path="saved_models/"):
+# 🔹 Function to train models on all datasets
+def train_all_models():
     """
-    Trains N-BEATSx, CTTS, TFT, and DeepAR models.
+    Loads existing synthetic datasets and trains N-BEATSx, CTTS, TFT, and DeepAR models.
     """
-    # 📌 Ensure correct save directory
-    save_path = os.path.join(PROJECT_ROOT, save_path)
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    if not os.path.exists(DATA_DIR):
+        print("❌ No synthetic data found. Please generate it first.")
+        return
+    
+    # ✅ Find all available synthetic data files
+    csv_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith(".csv")])
+    
+    if not csv_files:
+        print("❌ No synthetic data files found. Please generate data.")
+        return
+    
+    print(f"✅ Found {len(csv_files)} synthetic datasets. Starting training...")
 
-    # Prepare Data
-    X_train, Y_train = prepare_data(train_data)
-    dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(Y_train, dtype=torch.float32))
-    train_loader = DataLoader(dataset, batch_size=HPARAMS["batch_size"], shuffle=True)
+    # ✅ Ensure save directory exists
+    if not os.path.exists(SAVE_DIR):
+        os.makedirs(SAVE_DIR)
 
-    # Define Models
-    models = {
-        "nbeatsx": NBeatsX(input_size=HPARAMS["input_size"], output_size=1).to(DEVICE),
-        "ctts": CTTS().to(DEVICE),
-        "tft": TemporalFusionTransformer(input_size=HPARAMS["input_size"]).to(DEVICE),
-        "deepar": DeepAR(input_size=HPARAMS["input_size"]).to(DEVICE),
-    }
+    for file in csv_files:
+        series_name = file.replace(".csv", "")
+        file_path = os.path.join(DATA_DIR, file)
+        print(f"\n📌 Processing {series_name} ({file_path})...\n")
 
-    # Loss Function & Optimizer
-    criterion = nn.MSELoss()
+        # ✅ Load dataset
+        df = pd.read_csv(file_path)
+        X_train, Y_train = prepare_data(df, HPARAMS["input_size"])
+        dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(Y_train, dtype=torch.float32))
+        train_loader = DataLoader(dataset, batch_size=HPARAMS["batch_size"], shuffle=True)
 
-    for name, model in models.items():
-        print(f"\n🚀 Training {name.upper()}...\n")
-        optimizer = optim.Adam(model.parameters(), lr=HPARAMS["learning_rate"])
-        trained_model = train_model(model, train_loader, criterion, optimizer, HPARAMS["epochs"])
-        
-        # Save model
-        model_save_path = os.path.join(save_path, f"{name}.pth")
-        torch.save(trained_model.state_dict(), model_save_path)
-        print(f"✅ Model {name} saved at {model_save_path}.")
+        # ✅ Define Models
+        models = {
+            "nbeatsx": NBeatsX(input_size=HPARAMS["input_size"], output_size=1).to(DEVICE),
+            "ctts": CTTS().to(DEVICE),
+            "tft": TemporalFusionTransformer(input_size=HPARAMS["input_size"]).to(DEVICE),
+            "deepar": DeepAR(input_size=HPARAMS["input_size"]).to(DEVICE),
+        }
+
+        criterion = nn.MSELoss()
+
+        # 🔹 Train and save each model
+        for name, model in models.items():
+            print(f"\n🚀 Training {name.upper()} on {series_name}...\n")
+            optimizer = optim.Adam(model.parameters(), lr=HPARAMS["learning_rate"])
+            trained_model = train_model(model, train_loader, criterion, optimizer, HPARAMS["epochs"])
+
+            # ✅ Save model
+            model_save_path = os.path.join(SAVE_DIR, f"{name}_{series_name}.pth")
+            torch.save(trained_model.state_dict(), model_save_path)
+            print(f"✅ {name.upper()} trained on {series_name} saved at {model_save_path}.")
 
 if __name__ == "__main__":
-    from data.synthetic_data import generate_multiple_series
-    synthetic_data = generate_multiple_series(num_series=1, T=252)  # Generate 1 year of data
-    train_all_models(synthetic_data["synthetic_series_1"])
+    train_all_models()
