@@ -1,6 +1,6 @@
 from interpretability.shap_explainer import explain_with_shap
 from interpretability.lime_explainer import explain_with_lime
-from data.synthetic_data import generate_multiple_series
+from data.synthetic.synthetic_data import generate_multiple_series
 
 # Generate Synthetic Test Data
 test_data = generate_multiple_series(num_series=1, T=252)

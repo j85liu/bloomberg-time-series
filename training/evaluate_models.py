@@ -75,6 +75,6 @@ def evaluate_models(test_data):
               f"MAPE: {results[model_name]['MAPE']:.2f}%")
 
 if __name__ == "__main__":
-    from data.synthetic_data import generate_multiple_series
+    from data.synthetic.synthetic_data import generate_multiple_series
     test_data = generate_multiple_series(num_series=1, T=252)  # Generate test data
     evaluate_models(test_data["synthetic_series_1"])
