@@ -1,107 +1,138 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import math
+from models.modules import Attention, FeedForward, PreNorm
 
-class CNNFeatureExtractor(nn.Module):
-    """
-    CNN module to extract short-term patterns.
-    """
 
-    def __init__(self, input_channels, hidden_units):
-        super(CNNFeatureExtractor, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels=input_channels, out_channels=hidden_units, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units, kernel_size=3, padding=1)
-        self.relu = nn.ReLU()
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        dim,
+        depth,
+        heads,
+        mlp_ratio=4.0,
+        attn_dropout=0.0,
+        dropout=0.0,
+        qkv_bias=True,
+        revised=False,
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+
+        assert isinstance(
+            mlp_ratio, float
+        ), "MLP ratio should be an integer for valid "
+        mlp_dim = int(mlp_ratio * dim)
+
+        for _ in range(depth):
+            self.layers.append(
+                nn.ModuleList(
+                    [
+                        PreNorm(
+                            dim,
+                            Attention(
+                                dim,
+                                num_heads=heads,
+                                qkv_bias=qkv_bias,
+                                attn_drop=attn_dropout,
+                                proj_drop=dropout,
+                            ),
+                        ),
+                        PreNorm(
+                            dim,
+                            FeedForward(dim, mlp_dim, dropout_rate=dropout,),
+                        )
+                        if not revised
+                        else FeedForward(
+                            dim, mlp_dim, dropout_rate=dropout, revised=True,
+                        ),
+                    ]
+                )
+            )
 
     def forward(self, x):
-        """
-        Input: (batch, channels, sequence_length)
-        Output: (batch, hidden_units, sequence_length)
-        """
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
+        for attn, ff in self.layers:
+            x = attn(x) + x
+            x = ff(x) + x
         return x
 
-
 class PositionalEncoding(nn.Module):
-    """
-    Positional Encoding for Transformers (helps retain time information).
-    """
-
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-
+    def __init__(self, d_model, max_len=500):
+        super().__init__()
         pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(1)  # Shape: (max_len, 1, d_model)
-
+        pe[:, 0::2] = torch.sin(position * div_term)  # even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # odd indices
+        pe = pe.unsqueeze(0)  # shape (1, max_len, d_model)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        """
-        Input: (sequence_length, batch_size, d_model)
-        Output: (sequence_length, batch_size, d_model)
-        """
-        x = x + self.pe[:x.size(0), :]
+        # x: (batch_size, seq_len, d_model)
+        x = x + self.pe[:, :x.size(1)]
         return x
-
-
-class TransformerForecaster(nn.Module):
-    """
-    Transformer module to learn long-term dependencies.
-    """
-
-    def __init__(self, hidden_units, num_heads=4, num_layers=2, output_size=1):
-        super(TransformerForecaster, self).__init__()
-        self.positional_encoding = PositionalEncoding(hidden_units)
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_units, nhead=num_heads)
-        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-        self.fc_out = nn.Linear(hidden_units, output_size)  # Forecasting output
-
-    def forward(self, x):
-        """
-        Input: (sequence_length, batch_size, hidden_units)
-        Output: (batch_size, output_size)
-        """
-        x = self.positional_encoding(x)  # Add positional encoding
-        x = self.transformer(x)
-        x = self.fc_out(x[-1, :, :])  # Take the last time step's output
-        return x
-
 
 class CTTS(nn.Module):
-    """
-    CNN-Transformer Hybrid (CTTS) Model
-    """
+    def __init__(self, input_channels, cnn_kernel_size, cnn_out_channels, transformer_dim, nhead, num_layers, num_classes=3):
+        super().__init__()
 
-    def __init__(self, input_channels=1, hidden_units=64, output_size=1):
-        super(CTTS, self).__init__()
-        self.cnn = CNNFeatureExtractor(input_channels, hidden_units)
-        self.projection = nn.Linear(hidden_units, hidden_units)  # Ensure proper embedding
-        self.transformer = TransformerForecaster(hidden_units, output_size=output_size)
+        # 1D CNN as token extractor
+        self.cnn = nn.Conv1d(
+            in_channels=input_channels,
+            out_channels=cnn_out_channels,
+            kernel_size=cnn_kernel_size,
+            stride=1,
+            padding=cnn_kernel_size // 2  # same padding
+        )
+
+        # Transformer expects input of shape (seq_len, batch_size, embed_dim)
+        self.positional_encoding = PositionalEncoding(d_model=cnn_out_channels)
+
+        # encoder_layer = nn.TransformerEncoderLayer(
+        #     d_model=cnn_out_channels,
+        #     nhead=nhead,
+        #     dim_feedforward=transformer_dim,
+        #     batch_first=True
+        # )
+        # self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.transformer = Transformer(dim=cnn_out_channels, depth=1, heads=nhead)
+
+        # MLP for classification
+        self.mlp = nn.Sequential(
+            nn.Linear(cnn_out_channels, 64),
+            nn.ReLU(),
+            nn.Linear(64, num_classes),
+            nn.Softmax(dim=-1)
+        )
 
     def forward(self, x):
-        """
-        Input: (batch, channels, sequence_length)
-        Output: (batch, output_size)
-        """
-        x = self.cnn(x)  # CNN output: (batch, hidden_units, sequence_length)
-        x = x.permute(2, 0, 1)  # Reshape for Transformer: (seq_len, batch, hidden_units)
-        x = self.projection(x)  # Project to d_model for Transformer
-        x = self.transformer(x)
-        return x
+        # x: (batch_size, input_channels, seq_len)
+        tokens = self.cnn(x)  # -> (batch_size, cnn_out_channels, seq_len)
+        tokens = tokens.permute(0, 2, 1)  # -> (batch_size, seq_len, cnn_out_channels)
+        tokens = self.positional_encoding(tokens)  # add positional encoding
+        transformed = self.transformer(tokens)  # -> (batch_size, seq_len, cnn_out_channels)
+        pooled = transformed.mean(dim=1)  # global average pooling over tokens
+        out = self.mlp(pooled)  # -> (batch_size, num_classes)
+        return out
 
 
-# Example Usage & Testing
+# Example usage
 if __name__ == "__main__":
-    model = CTTS(input_channels=1, hidden_units=64, output_size=1)
+    batch_size = 8
+    input_channels = 1
+    seq_len = 100
 
-    test_input = torch.rand(10, 1, 30)  # (batch_size, channels, sequence_length)
-    output = model(test_input)
+    model = CTTS(
+        input_channels=input_channels,
+        cnn_kernel_size=5,
+        cnn_out_channels=64,
+        transformer_dim=128,
+        nhead=4,
+        num_layers=2,
+        num_classes=3
+    )
 
-    print("CTTS Model Output Shape:", output.shape)  # Expected: (batch_size, output_size)
+    dummy_input = torch.randn(batch_size, input_channels, seq_len)
+    output = model(dummy_input)
+    print("Output shape:", output.shape)  # (batch_size, 3)

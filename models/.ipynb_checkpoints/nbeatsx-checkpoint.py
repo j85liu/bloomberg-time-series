@@ -26,6 +26,7 @@ class NBeatsBlock(nn.Module):
 class NBeatsX(nn.Module):
     def __init__(self, input_size, exog_size, output_size=1, num_blocks=3, hidden_units=256):
         super(NBeatsX, self).__init__()
+        print('hi')
         self.blocks = nn.ModuleList([
             NBeatsBlock(input_size, exog_size, output_size, hidden_units) for _ in range(num_blocks)
         ])
@@ -34,7 +35,8 @@ class NBeatsX(nn.Module):
 
     def forward(self, x, exog):
         residual = x.clone()  # Clone to avoid modifying computation graph
-        forecast = torch.zeros((x.shape[0], self.output_size))  # Initialize to avoid in-place operations
+        forecast = torch.zeros_like((x.shape[0], self.output_size))  # Initialize to avoid in-place operations
+        
         for block in self.blocks:
             block_forecast = block(residual, exog)
             forecast = forecast + block_forecast  # Avoid in-place modification
