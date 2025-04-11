@@ -63,6 +63,6 @@ def explain_with_lime(model_name, test_data):
     plt.show()
 
 if __name__ == "__main__":
-    from data.synthetic_data import generate_multiple_series
+    from data.synthetic.synthetic_data import generate_multiple_series
     test_data = generate_multiple_series(num_series=1, T=252)  # Generate synthetic test data
     explain_with_lime("nbeatsx", test_data["synthetic_series_1"])

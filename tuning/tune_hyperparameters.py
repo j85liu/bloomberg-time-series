@@ -57,7 +57,7 @@ def objective(trial):
     hidden_units = trial.suggest_int("hidden_units", 32, 512)
 
     # Prepare Data (Split into train & validation)
-    from data.synthetic_data import generate_multiple_series
+    from data.synthetic.synthetic_data import generate_multiple_series
     data = generate_multiple_series(num_series=1, T=252)
     train_data, val_data = data["synthetic_series_1"][:200], data["synthetic_series_1"][200:]
 
