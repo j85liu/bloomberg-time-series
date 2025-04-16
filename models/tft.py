@@ -49,7 +49,8 @@ class TemporalFusionTransformer(nn.Module):
         x = self.transformer(x)
 
         # 6️⃣ Get the final prediction (last time step)
-        x = self.fc_out(x[-1, :, :])  # Use last time step for prediction
+        x = self.fc_out(x.mean(dim=0))  # Use mean pooling over all timesteps
+
         return x
 
 # Example usage
