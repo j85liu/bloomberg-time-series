@@ -85,7 +85,7 @@ class NBeatsBlock(nn.Module):
         x = self.relu(self.fc2(x))
         theta = self.fc_theta(x)
         backcast, forecast = self.basis(theta)
-        return backcast, forecast, theta  # <--- NOW ALSO RETURN THETA!
+        return backcast, forecast, theta
 
 # -- N-BEATSx Interpretable Model -- #
 class NBeatsX(nn.Module):
@@ -98,10 +98,12 @@ class NBeatsX(nn.Module):
         for i in range(num_blocks):
             if i % 2 == 0:  # Alternate between trend and seasonality blocks
                 basis = TrendBasis(degree, input_size, forecast_size)
-                theta_size = 2 * (degree + 1)
+                # FIXED: theta_size needs to be 2 * (degree + 1) to account for both forecast and backcast
+                theta_size = 2 * (degree + 1)  # degrees + 1 for each of backcast and forecast
             else:
                 basis = SeasonalityBasis(harmonics, input_size, forecast_size)
-                theta_size = 2 * harmonics
+                # FIXED: theta_size needs to be 4 * harmonics to account for both forecast and backcast
+                theta_size = 4 * harmonics  # 2 * harmonics for each of backcast and forecast
 
             self.blocks.append(
                 NBeatsBlock(
