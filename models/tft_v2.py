@@ -101,6 +101,7 @@ class VariableSelectionNetwork(nn.Module):
         combined = (sparse_weights * processed_inputs).sum(dim=2)  # [batch_size, seq_len, hidden_dim]
         
         # Return combined inputs and variable selection weights
+        # Return both the combined output and the selection weights
         return combined, sparse_weights.squeeze(-1)
 
 class InterpretableMultiHeadAttention(nn.Module):
@@ -254,7 +255,7 @@ class TemporalFusionTransformer(nn.Module):
             nn.Linear(hidden_dim, output_dim) for _ in range(self.num_quantiles)
         ])
         
-    def forward(self, static_inputs=None, encoder_inputs=None, decoder_inputs=None):
+    def forward(self, static_inputs=None, encoder_inputs=None, decoder_inputs=None, return_attention=False):
         """
         Args:
             static_inputs: List of static input tensors of shape [batch_size, input_size_i]
@@ -304,6 +305,7 @@ class TemporalFusionTransformer(nn.Module):
                 lstm_output = torch.cat([encoder_output, decoder_output], dim=1)
                 
                 # Apply interpretable multi-head attention
+                # When calling the attention layer:
                 attn_output, attn_weights = self.attention(lstm_output, lstm_output, lstm_output)
                 
                 # Static enrichment for decoder steps only
@@ -327,7 +329,11 @@ class TemporalFusionTransformer(nn.Module):
                 proj(transformer_decoder_output) for proj in self.quantile_proj
             ], dim=-1)  # [batch_size, forecast_horizon, output_dim, num_quantiles]
             
-            return quantile_forecasts
+            # At the end:
+            if return_attention:
+                return quantile_forecasts, attn_weights
+            else:
+                return quantile_forecasts
         
         # Return none if no decoder inputs were provided
         return None
