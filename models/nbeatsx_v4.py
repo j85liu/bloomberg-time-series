@@ -209,7 +209,7 @@ class Stack(nn.Module):
         return residual, forecast, thetas if return_theta else thetas
 
 # -- NBEATSx Interpretable Model -- #
-class NBEATSx(nn.Module):
+class NBeatsX(nn.Module):
     def __init__(
         self, 
         input_size: int, 
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     exog_size = 5  # 5 exogenous variables (e.g., temperature, calendar features, etc.)
     
     # Create model with configurable stack architecture
-    model = NBEATSx(
+    model = NBeatsX(
         input_size=input_size,
         forecast_size=forecast_size,
         exog_size=exog_size,
