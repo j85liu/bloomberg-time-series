@@ -261,8 +261,12 @@ class TemporalFusionTransformer(nn.Module):
             static_inputs: List of static input tensors of shape [batch_size, input_size_i]
             encoder_inputs: List of encoder input tensors of shape [batch_size, backcast_length, input_size_i]
             decoder_inputs: List of decoder input tensors of shape [batch_size, forecast_horizon, input_size_i]
+            return_attention: Whether to return attention weights and variable selection weights
         """
         batch_size = encoder_inputs[0].size(0) if encoder_inputs else decoder_inputs[0].size(0)
+        
+        # Initialize dictionary to store attention and variable selection weights
+        attention_outputs = {}
         
         # Static variable processing
         static_context = None
@@ -270,9 +274,12 @@ class TemporalFusionTransformer(nn.Module):
             # Convert static inputs to match sequence dimension for VSN
             # [batch_size, input_size] -> [batch_size, 1, input_size]
             static_inputs_seq = [x.unsqueeze(1) for x in static_inputs]
-            static_embedding, _ = self.static_vsn(static_inputs_seq)
+            static_embedding, static_weights = self.static_vsn(static_inputs_seq)
             # Remove sequence dimension: [batch_size, 1, hidden_dim] -> [batch_size, hidden_dim]
             static_context = static_embedding.squeeze(1)
+            
+            if return_attention:
+                attention_outputs['static_weights'] = static_weights.squeeze(1)  # [batch_size, num_static_vars]
         
         # Historical (encoder) variable processing
         encoder_output = None
@@ -280,6 +287,9 @@ class TemporalFusionTransformer(nn.Module):
             # Pass static context if available
             static_context_expanded = static_context.unsqueeze(1).expand(-1, self.backcast_length, -1) if static_context is not None else None
             encoder_embedding, encoder_sparse_weights = self.encoder_vsn(encoder_inputs, static_context_expanded)
+            
+            if return_attention:
+                attention_outputs['encoder_weights'] = encoder_sparse_weights  # [batch_size, backcast_length, num_encoder_vars]
             
             # LSTM encoder
             encoder_output, (h_n, c_n) = self.lstm_encoder(encoder_embedding)
@@ -294,19 +304,38 @@ class TemporalFusionTransformer(nn.Module):
             static_context_expanded = static_context.unsqueeze(1).expand(-1, self.forecast_horizon, -1) if static_context is not None else None
             decoder_embedding, decoder_sparse_weights = self.decoder_vsn(decoder_inputs, static_context_expanded)
             
+            if return_attention:
+                attention_outputs['decoder_weights'] = decoder_sparse_weights  # [batch_size, forecast_horizon, num_decoder_vars]
+            
             # LSTM decoder
             decoder_output, _ = self.lstm_decoder(decoder_embedding, (h_n, c_n))
             
+            attn_weights = None
+            
             # Self-attention layer - combines past and future representations
             if encoder_output is not None:
-                # Create attention mask (only allow attention to past observations)
+                # Calculate sequence length here - this was missing in the previous version
                 seq_len = self.backcast_length + self.forecast_horizon
+                
                 # Combine encoder and decoder outputs
                 lstm_output = torch.cat([encoder_output, decoder_output], dim=1)
                 
                 # Apply interpretable multi-head attention
-                # When calling the attention layer:
                 attn_output, attn_weights = self.attention(lstm_output, lstm_output, lstm_output)
+                
+                if return_attention and attn_weights is not None:
+                    # Store full attention weights
+                    attention_outputs['attention_weights'] = attn_weights  # [batch_size, num_heads, seq_len, seq_len]
+                    
+                    # Also store interpretable components for easier analysis
+                    # Encoder-encoder attention (historical self-attention)
+                    attention_outputs['encoder_self_attention'] = attn_weights[:, :, :self.backcast_length, :self.backcast_length]
+                    
+                    # Decoder-encoder attention (future to past - most important for interpretability)
+                    attention_outputs['decoder_encoder_attention'] = attn_weights[:, :, self.backcast_length:, :self.backcast_length]
+                    
+                    # Decoder-decoder attention (future self-attention)
+                    attention_outputs['decoder_self_attention'] = attn_weights[:, :, self.backcast_length:, self.backcast_length:]
                 
                 # Static enrichment for decoder steps only
                 if static_context is not None:
@@ -329,14 +358,18 @@ class TemporalFusionTransformer(nn.Module):
                 proj(transformer_decoder_output) for proj in self.quantile_proj
             ], dim=-1)  # [batch_size, forecast_horizon, output_dim, num_quantiles]
             
-            # At the end:
+            # Return appropriate outputs
             if return_attention:
-                return quantile_forecasts, attn_weights
+                return quantile_forecasts, attention_outputs
             else:
                 return quantile_forecasts
         
-        # Return none if no decoder inputs were provided
-        return None
+        # If we reach here, no decoder inputs were provided
+        if return_attention:
+            # Even if we can't provide predictions, we can still return attention info if requested
+            return None, attention_outputs
+        else:
+            return None
 
 # Example usage
 if __name__ == "__main__":
@@ -377,3 +410,13 @@ if __name__ == "__main__":
     output = model(static_inputs, encoder_inputs, decoder_inputs)
     
     print(f"Output shape: {output.shape}")  # [batch_size, forecast_horizon, output_dim, num_quantiles]
+
+    # Forward pass with attention
+    output_with_attn, attention_outputs = model(static_inputs, encoder_inputs, decoder_inputs, return_attention=True)
+
+    print(f"Output shape: {output_with_attn.shape}")  # [batch_size, forecast_horizon, output_dim, num_quantiles]
+    print(f"Attention keys: {attention_outputs.keys()}")
+
+    # Example: Examining decoder-encoder attention (most useful for interpretability)
+    decoder_encoder_attn = attention_outputs['decoder_encoder_attention']
+    print(f"Decoder-encoder attention shape: {decoder_encoder_attn.shape}")  # [batch_size, num_heads, forecast_horizon, backcast_length]
