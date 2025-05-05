@@ -180,21 +180,21 @@ class DeepARModel(nn.Module):
         
         # Auto-regressive loop
         future_y = []
-        current_y = torch.zeros(batch_size, 1, device=y.device)
+        current_y = torch.zeros(batch_size, 1, 1, device=y.device)  # Shape: (batch_size, seq_len=1, feature_dim=1)
         
         for t in range(seq_len + self.prediction_len):
             # Get input embeddings
             if t < seq_len:
                 # Training phase: use ground truth
                 if t > 0:
-                    current_y = y[:, t-1:t]
+                    current_y = y[:, t-1:t].unsqueeze(-1)  # Add dimension for embedding
                 input_features = time_features[:, t:t+1] if time_features is not None else None
             else:
                 # Prediction phase: use previous prediction
                 t_offset = t - seq_len
                 input_features = future_time_features[:, t_offset:t_offset+1] if future_time_features is not None else None
             
-            # Get embeddings
+            # Get embeddings - now both inputs have correct dimensions
             lag_emb = self.lag_embedding(current_y)
             
             # Combine embeddings
@@ -217,26 +217,26 @@ class DeepARModel(nn.Module):
                     means.append(mean.squeeze(1))
                     scales.append(scale.squeeze(1))
                 # Sample next value
-                current_y = self.output_layer.sample(mean, scale) if not training or t >= seq_len else y[:, t:t+1]
+                current_y = self.output_layer.sample(mean, scale) if not training or t >= seq_len else y[:, t:t+1].unsqueeze(-1)
                 if t >= seq_len:
-                    future_y.append(current_y.squeeze(1))
+                    future_y.append(current_y.squeeze(-1).squeeze(1))
             elif self.likelihood == 'studentt':
                 mean, scale, nu = self.output_layer(output)
                 if t >= seq_len:
                     means.append(mean.squeeze(1))
                     scales.append(scale.squeeze(1))
                 # Simplified sampling for now
-                current_y = Normal(mean, scale).sample() if not training or t >= seq_len else y[:, t:t+1]
+                current_y = Normal(mean, scale).sample() if not training or t >= seq_len else y[:, t:t+1].unsqueeze(-1)
                 if t >= seq_len:
-                    future_y.append(current_y.squeeze(1))
+                    future_y.append(current_y.squeeze(-1).squeeze(1))
             elif self.likelihood == 'negbinomial':
                 mean, alpha = self.output_layer(output)
                 if t >= seq_len:
                     means.append(mean.squeeze(1))
                     scales.append(alpha.squeeze(1))
-                current_y = self.output_layer.sample(mean, alpha) if not training or t >= seq_len else y[:, t:t+1]
+                current_y = self.output_layer.sample(mean, alpha) if not training or t >= seq_len else y[:, t:t+1].unsqueeze(-1)
                 if t >= seq_len:
-                    future_y.append(current_y.squeeze(1))
+                    future_y.append(current_y.squeeze(-1).squeeze(1))
         
         # Stack outputs
         result = {
@@ -265,7 +265,7 @@ class DeepARModel(nn.Module):
         # Split input and target
         seq_len = min(y.size(1) - self.prediction_len, self.seq_len)
         input_y = y[:, :seq_len]
-        target_y = y[:, seq_len:seq_len + self.prediction_len]
+        target_y = y[:, seq_len:seq_len + self.prediction_len].unsqueeze(-1)  # Add dimension to match model output
         
         # Split features
         input_time_features = time_features[:, :seq_len] if time_features is not None else None
@@ -284,7 +284,7 @@ class DeepARModel(nn.Module):
         
         # Apply mask if provided
         if mask is not None:
-            mask = mask[:, seq_len:seq_len + self.prediction_len]
+            mask = mask[:, seq_len:seq_len + self.prediction_len].unsqueeze(-1)  # Add dimension to match log_prob
             log_prob = log_prob * mask
             nll = -log_prob.sum() / mask.sum()
         else:
@@ -308,3 +308,225 @@ class DeepARModel(nn.Module):
             samples.append(output['samples'].unsqueeze(-1))
         
         return torch.cat(samples, dim=-1)
+    
+
+# ============= Example Usage =============
+
+if __name__ == "__main__":
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import numpy as np
+    from torch.utils.data import Dataset, DataLoader
+    
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    
+    # Create synthetic time series dataset
+    class SyntheticTimeSeriesDataset(Dataset):
+        def __init__(self, num_series=1000, seq_len=60, pred_len=7):
+            self.seq_len = seq_len
+            self.pred_len = pred_len
+            
+            # Generate synthetic data with trend and seasonality
+            time_steps = seq_len + pred_len
+            time = np.arange(time_steps)
+            
+            data = []
+            for i in range(num_series):
+                # Create varying trends and seasonality for each series
+                trend = 0.01 * time + np.random.randn() * 0.05
+                seasonal = 10 * np.sin(2 * np.pi * time / 12) + 5 * np.cos(2 * np.pi * time / 24)
+                noise = np.random.randn(time_steps) * 0.5
+                series = trend + seasonal + noise + 10
+                data.append(series)
+            
+            self.data = torch.FloatTensor(data)
+            
+            # Create time features (e.g., time of day, day of week)
+            hour_of_day = np.sin(2 * np.pi * np.arange(time_steps) / 24)
+            day_of_week = np.sin(2 * np.pi * np.arange(time_steps) / 7)
+            self.time_features = torch.FloatTensor(np.stack([hour_of_day, day_of_week], axis=-1))
+            
+            # Repeat time features for all series
+            self.time_features = self.time_features.unsqueeze(0).repeat(num_series, 1, 1)
+            
+            # Create static features (random category embeddings)
+            self.static_features = torch.randn(num_series, 5)  # 5-dim static features
+        
+        def __len__(self):
+            return len(self.data)
+        
+        def __getitem__(self, idx):
+            return {
+                'y': self.data[idx],
+                'time_features': self.time_features[idx],
+                'static_features': self.static_features[idx]
+            }
+    
+    # Hyperparameters
+    config = {
+        'num_time_features': 2,
+        'num_static_features': 5,
+        'embedding_dim': 32,
+        'hidden_size': 64,
+        'num_layers': 2,
+        'dropout': 0.1,
+        'likelihood': 'gaussian',  # or 'studentt', 'negbinomial'
+        'seq_len': 60,
+        'prediction_len': 7,
+        'batch_size': 32,
+        'num_epochs': 10,
+        'learning_rate': 0.001
+    }
+    
+    # Create dataset and dataloader
+    dataset = SyntheticTimeSeriesDataset(
+        num_series=1000, 
+        seq_len=config['seq_len'], 
+        pred_len=config['prediction_len']
+    )
+    dataloader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
+    
+    # Initialize model
+    model = DeepARModel(**{k: v for k, v in config.items() if k not in ['batch_size', 'num_epochs', 'learning_rate']})
+    
+    # Setup optimizer
+    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
+    
+    # Training loop
+    print("Starting training...")
+    for epoch in range(config['num_epochs']):
+        total_loss = 0
+        num_batches = 0
+        
+        for batch_idx, batch in enumerate(dataloader):
+            y = batch['y']
+            time_features = batch['time_features']
+            static_features = batch['static_features']
+            
+            # Debug prints
+            if batch_idx == 0 and epoch == 0:
+                print(f"y shape: {y.shape}")
+                print(f"time_features shape: {time_features.shape}")
+                print(f"static_features shape: {static_features.shape}")
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Compute loss
+            loss = model.loss(
+                y=y,
+                time_features=time_features,
+                static_features=static_features
+            )
+            
+            # Backward and optimize
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+            
+            if batch_idx % 10 == 0:
+                print(f"Epoch [{epoch+1}/{config['num_epochs']}], Batch [{batch_idx}/{len(dataloader)}], Loss: {loss.item():.4f}")
+        
+        avg_loss = total_loss / num_batches
+        print(f"Epoch [{epoch+1}/{config['num_epochs']}] Average Loss: {avg_loss:.4f}\n")
+    
+    # Make predictions
+    print("Making predictions...")
+    model.eval()
+    
+    # Take first batch for prediction
+    batch = next(iter(dataloader))
+    y = batch['y'][:5]  # Take first 5 series
+    time_features = batch['time_features'][:5]
+    static_features = batch['static_features'][:5]
+    
+    with torch.no_grad():
+        # Get single prediction
+        output = model.forward(
+            y[:, :config['seq_len']], 
+            time_features[:, :config['seq_len']], 
+            static_features,
+            future_time_features=time_features[:, config['seq_len']:config['seq_len']+config['prediction_len']],
+            training=False
+        )
+        
+        # Get multiple samples
+        samples = model.sample(
+            y[:, :config['seq_len']], 
+            num_samples=100,
+            time_features=time_features[:, :config['seq_len']], 
+            static_features=static_features,
+            future_time_features=time_features[:, config['seq_len']:config['seq_len']+config['prediction_len']]
+        )
+    
+    # Print results
+    print(f"Prediction means shape: {output['mean'].shape}")
+    print(f"Prediction samples shape: {samples.shape}")
+    
+    # Visualize results for first series
+    print("\nPrediction vs Ground Truth for first series:")
+    print("Ground truth:", y[0, config['seq_len']:config['seq_len']+config['prediction_len']].numpy())
+    print("Mean prediction:", output['mean'][0].squeeze().numpy())
+    print("Sample prediction:", samples[0, :, 0].numpy())  # First sample
+    
+    # Calculate metrics
+    mse = torch.mean((output['mean'].squeeze() - y[:, config['seq_len']:config['seq_len']+config['prediction_len']]) ** 2)
+    mae = torch.mean(torch.abs(output['mean'].squeeze() - y[:, config['seq_len']:config['seq_len']+config['prediction_len']]))
+    print(f"\nMean Squared Error: {mse.item():.4f}")
+    print(f"Mean Absolute Error: {mae.item():.4f}")
+    
+    # Example of saving and loading the model
+    print("\nSaving model...")
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'config': config
+    }, 'deepar_model.pt')
+    
+    print("Loading model...")
+    checkpoint = torch.load('deepar_model.pt')
+    new_model = DeepARModel(**{k: v for k, v in checkpoint['config'].items() if k not in ['batch_size', 'num_epochs', 'learning_rate']})
+    new_model.load_state_dict(checkpoint['model_state_dict'])
+    new_optimizer = optim.Adam(new_model.parameters(), lr=checkpoint['config']['learning_rate'])
+    new_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    print("Model loaded successfully!")
+    
+    # Test with different likelihoods
+    print("\nTesting with Negative Binomial likelihood...")
+    config_negbin = config.copy()
+    config_negbin['likelihood'] = 'negbinomial'
+    
+    # Convert data to count data for neg binomial
+    count_data = torch.round(torch.exp(dataset.data / 5)).clamp(0, 100)  # Convert to counts
+    
+    # Create a dataset for count data
+    count_dataset = SyntheticTimeSeriesDataset(num_series=100)
+    count_dataset.data = count_data[:100]  # Use subset for quick test
+    count_dataloader = DataLoader(count_dataset, batch_size=16, shuffle=True)
+    
+    # Initialize and train negative binomial model
+    negbin_model = DeepARModel(**{k: v for k, v in config_negbin.items() if k not in ['batch_size', 'num_epochs', 'learning_rate']})
+    negbin_optimizer = optim.Adam(negbin_model.parameters(), lr=config['learning_rate'])
+    
+    # Train for a few epochs
+    for epoch in range(3):
+        for batch_idx, batch in enumerate(count_dataloader):
+            negbin_optimizer.zero_grad()
+            loss = negbin_model.loss(
+                y=batch['y'],
+                time_features=batch['time_features'],
+                static_features=batch['static_features']
+            )
+            loss.backward()
+            negbin_optimizer.step()
+            
+            if batch_idx == 0:
+                print(f"NegBin Model - Epoch [{epoch+1}/3], Loss: {loss.item():.4f}")
+    
+    print("\nExample usage completed successfully!")
