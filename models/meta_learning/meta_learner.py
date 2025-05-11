@@ -94,6 +94,8 @@ class MetaLearner(nn.Module):
                 nn.ReLU(),
                 nn.Linear(hidden_dim, 4)  # Sharpe ratio, max drawdown, alpha, beta
             )
+    
+    
         
     def forward(self, meta_features, model_outputs=None, market_regimes=None):
         """
@@ -157,6 +159,70 @@ class MetaLearner(nn.Module):
             # Just use meta-features if no other inputs
             final_weights = meta_weights
             
+        # Add softmax to get proper weights
+        model_weights = F.softmax(final_weights, dim=1)
+        
+        # Calculate financial metrics if requested
+        financial_metrics = None
+        if self.use_financial_metrics:
+            financial_metrics = self.financial_projector(model_weights)
+            
+        return {
+            'weights': model_weights,
+            'financial_metrics': financial_metrics
+        }
+
+    # Add this to the MetaLearner class in meta_learner.py
+
+    def forward_with_model_features(self, meta_features, model_features, market_regimes=None):
+        """
+        Enhanced forward pass that also leverages internal model states.
+        
+        Args:
+            meta_features: Meta-features of time series [batch_size, meta_feature_dim]
+            model_features: Internal features from base models 
+                        [batch_size, num_models, model_feature_dim]
+            market_regimes: Optional market regime probabilities [batch_size, num_regimes]
+                
+        Returns:
+            Dictionary containing:
+                - weights: Predicted model weights [batch_size, num_models]
+                - financial_metrics: Optional financial performance metrics [batch_size, 4]
+        """
+        batch_size = meta_features.size(0)
+        num_models = model_features.size(1)
+        
+        # Process meta-features
+        meta_weights = self.meta_network(meta_features)
+        
+        # Process model-specific features
+        model_processed = []
+        for i in range(num_models):
+            model_i_features = model_features[:, i, :]
+            processed = self.model_processors[i](model_i_features)
+            model_processed.append(processed)
+        
+        model_processed = torch.cat(model_processed, dim=1)
+        model_weights = self.stacking_network(model_processed)
+        
+        # Add regime-specific logic if available
+        if self.use_regime_info and market_regimes is not None:
+            regime_weights = torch.zeros_like(meta_weights)
+            for i, network in enumerate(self.regime_networks):
+                regime_pred = network(meta_features)
+                regime_prob = market_regimes[:, i].unsqueeze(1)
+                regime_weights += regime_pred * regime_prob
+        else:
+            regime_weights = None
+        
+        # Combine weights
+        if regime_weights is not None:
+            combined_input = torch.cat([meta_weights, model_weights, regime_weights], dim=1)
+            final_weights = self.combined_network(combined_input)
+        else:
+            combined_input = torch.cat([meta_weights, model_weights], dim=1)
+            final_weights = self.combined_network(combined_input)
+        
         # Add softmax to get proper weights
         model_weights = F.softmax(final_weights, dim=1)
         

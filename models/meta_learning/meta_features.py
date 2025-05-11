@@ -196,6 +196,81 @@ class MetaFeatureExtractor(nn.Module):
         
         return financial_features
     
+    # Add this to the MetaFeatureExtractor class in meta_features.py
+
+    def extract_time_series_features(self, x):
+        """
+        Extract comprehensive time series features including financial-specific indicators.
+        
+        Args:
+            x: Time series data [batch_size, seq_len]
+                
+        Returns:
+            ts_features: Time series features [batch_size, feature_dim]
+        """
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        
+        # Basic time series features
+        # Mean, std, min, max
+        basic_stats = torch.stack([
+            torch.mean(x, dim=1),
+            torch.std(x, dim=1),
+            torch.min(x, dim=1)[0],
+            torch.max(x, dim=1)[0]
+        ], dim=1)
+        
+        # Calculate returns for financial indicators
+        if seq_len > 1:
+            returns = (x[:, 1:] / (x[:, :-1] + 1e-8)) - 1.0
+            
+            # Financial indicators
+            # Volatility (std of returns)
+            volatility = torch.std(returns, dim=1, keepdim=True)
+            
+            # Drawdown
+            cumulative = torch.cumprod(1 + returns, dim=1)
+            running_max = torch.cummax(cumulative, dim=1)[0]
+            drawdown = (cumulative - running_max) / running_max
+            max_drawdown = torch.min(drawdown, dim=1, keepdim=True)[0]
+            
+            # Momentum indicators (fast/slow moving average crossovers)
+            if seq_len >= 10:
+                ma_fast = torch.mean(x[:, -5:], dim=1, keepdim=True)
+                ma_slow = torch.mean(x[:, -10:], dim=1, keepdim=True)
+                ma_crossover = ma_fast / ma_slow - 1.0
+            else:
+                ma_crossover = torch.zeros((batch_size, 1), device=x.device)
+                
+            # Combine financial indicators
+            financial_indicators = torch.cat([
+                volatility, max_drawdown, ma_crossover
+            ], dim=1)
+        else:
+            # If sequence is too short for returns, use placeholders
+            financial_indicators = torch.zeros((batch_size, 3), device=x.device)
+        
+        # Stationarity features (approximation)
+        if seq_len > 10:
+            # Split series into first and second half
+            first_half = x[:, :seq_len//2]
+            second_half = x[:, seq_len//2:]
+            
+            # Compare means and variances of both halves
+            mean_shift = torch.abs(torch.mean(first_half, dim=1) - torch.mean(second_half, dim=1)).unsqueeze(1)
+            var_shift = torch.abs(torch.var(first_half, dim=1) - torch.var(second_half, dim=1)).unsqueeze(1)
+            
+            stationarity_features = torch.cat([mean_shift, var_shift], dim=1)
+        else:
+            stationarity_features = torch.zeros((batch_size, 2), device=x.device)
+        
+        # Combine all features
+        ts_features = torch.cat([
+            basic_stats, financial_indicators, stationarity_features
+        ], dim=1)
+        
+        return ts_features
+    
     def forward(self, x, task_ids=None):
         """
         Extract enhanced meta-features from time series.

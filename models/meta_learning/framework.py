@@ -140,6 +140,8 @@ class FinancialMetaLearningFramework:
             lr=lr
         )
     
+    
+    
     def forecast(self, time_series, time_features=None, static_features=None, future_time_features=None):
         """
         Generate forecast using meta-learning framework.
@@ -239,6 +241,99 @@ class FinancialMetaLearningFramework:
                 'individual_forecasts': individual_forecasts, # Individual model forecasts (for analysis)
                 'meta_features': meta_features              # Meta-features (for explainability)
             }
+    
+    # Add this to the FinancialMetaLearningFramework class in framework.py
+
+    def extract_model_features(self, time_series, time_features=None, static_features=None, future_time_features=None):
+        """
+        Extract internal features from each base model.
+        
+        Args:
+            time_series: Input time series [batch_size, seq_len]
+            time_features: Time features [batch_size, seq_len, feat_dim] or None
+            static_features: Static features [batch_size, feat_dim] or None
+            future_time_features: Future time features [batch_size, forecast_horizon, feat_dim] or None
+            
+        Returns:
+            model_features: Internal features from each model [batch_size, num_models, feature_dim]
+        """
+        batch_size = time_series.size(0)
+        model_features = []
+        
+        with torch.no_grad():
+            for name, model in self.base_models.items():
+                # Extract different features based on model type
+                if name == 'tft':
+                    # Format inputs for TFT
+                    static_inputs = [static_features] if static_features is not None else None
+                    encoder_inputs = [time_series.unsqueeze(-1)]
+                    encoder_inputs += [time_features] if time_features is not None else []
+                    decoder_inputs = [future_time_features] if future_time_features is not None else []
+                    
+                    # Get TFT attention features
+                    _, attention = model(static_inputs, encoder_inputs, decoder_inputs, return_attention=True)
+                    
+                    # Extract interesting attention patterns
+                    if 'encoder_weights' in attention and 'decoder_encoder_attention' in attention:
+                        # Variable selection weights
+                        var_weights = attention['encoder_weights'].mean(dim=1)  # [batch, num_vars]
+                        
+                        # Decoder-encoder attention (future looking at past)
+                        dec_enc_attn = attention['decoder_encoder_attention'].mean(dim=1)  # [batch, horizon, seq_len]
+                        attn_features = dec_enc_attn.reshape(batch_size, -1)  # Flatten
+                        
+                        # Combine the features
+                        tft_features = torch.cat([var_weights, attn_features[:, :10]], dim=1)  # Limit size
+                    else:
+                        # Fallback if attention not available
+                        tft_features = torch.zeros(batch_size, 15, device=time_series.device)
+                    
+                    model_features.append(tft_features.unsqueeze(1))  # Add model dimension
+                    
+                elif name == 'nbeatsx':
+                    # Format inputs for NBEATSx
+                    exog = None
+                    if time_features is not None and future_time_features is not None:
+                        exog = torch.cat([time_features, future_time_features], dim=1)
+                    
+                    # Get NBEATS decomposition
+                    _, components = model(time_series, exog, return_decomposition=True)
+                    
+                    # Extract component magnitudes as features
+                    component_features = torch.stack([
+                        torch.mean(abs(comp), dim=1) for comp in components
+                    ], dim=1)  # [batch, num_components]
+                    
+                    model_features.append(component_features.unsqueeze(1))  # Add model dimension
+                    
+                elif name == 'deepar':
+                    # For DeepAR, use the parameter forecasts as features
+                    output = model(
+                        time_series,
+                        time_features=time_features,
+                        static_features=static_features,
+                        future_time_features=future_time_features,
+                        training=False
+                    )
+                    
+                    # Extract mean and scale estimates
+                    mean = output['mean'].squeeze(-1)  # [batch, horizon]
+                    scale = output['scale'].squeeze(-1)  # [batch, horizon]
+                    
+                    # Calculate coefficient of variation (scale/mean) as feature
+                    cv = scale / (mean.abs() + 1e-8)
+                    
+                    # Combine features
+                    deepar_features = torch.cat([
+                        mean.mean(dim=1, keepdim=True),  # Average prediction
+                        scale.mean(dim=1, keepdim=True),  # Average uncertainty
+                        cv.mean(dim=1, keepdim=True)      # Average coefficient of variation
+                    ], dim=1)
+                    
+                    model_features.append(deepar_features.unsqueeze(1))  # Add model dimension
+        
+        # Concatenate model features along model dimension
+        return torch.cat(model_features, dim=1)  # [batch_size, num_models, feature_dim]
 
 
 def meta_learning_pipeline(data_processor, train_data, val_data, test_data, base_models, 
