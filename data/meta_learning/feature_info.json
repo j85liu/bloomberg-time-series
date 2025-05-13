@@ -1,0 +1,83 @@
+{
+  "feature_groups": {
+    "target": [
+      "vol_21d"
+    ],
+    "price_features": [
+      "close",
+      "vol_5d",
+      "vol_10d",
+      "vol_63d",
+      "price_to_ma20",
+      "price_to_ma50"
+    ],
+    "technical_indicators": [
+      "momentum_5d",
+      "momentum_10d",
+      "momentum_21d"
+    ],
+    "calendar_features": [
+      "day_of_week_sin",
+      "day_of_week_cos",
+      "month_sin",
+      "month_cos",
+      "month_end",
+      "quarter_end",
+      "year_end"
+    ],
+    "macro_indicators": [
+      "T10Y2Y",
+      "UNRATE",
+      "STLFSI",
+      "BAA10Y",
+      "TEDRATE",
+      "USREC",
+      "CFNAI"
+    ],
+    "market_indicators": [
+      "SP500",
+      "vix_sp500_corr"
+    ],
+    "static_features": [
+      "regime_low",
+      "regime_normal",
+      "regime_high"
+    ],
+    "event_indicators": [
+      "fomc_meeting"
+    ]
+  },
+  "all_features": [
+    "vol_21d",
+    "close",
+    "vol_5d",
+    "vol_10d",
+    "vol_63d",
+    "price_to_ma20",
+    "price_to_ma50",
+    "momentum_5d",
+    "momentum_10d",
+    "momentum_21d",
+    "day_of_week_sin",
+    "day_of_week_cos",
+    "month_sin",
+    "month_cos",
+    "month_end",
+    "quarter_end",
+    "year_end",
+    "T10Y2Y",
+    "UNRATE",
+    "STLFSI",
+    "BAA10Y",
+    "TEDRATE",
+    "USREC",
+    "CFNAI",
+    "SP500",
+    "vix_sp500_corr",
+    "regime_low",
+    "regime_normal",
+    "regime_high",
+    "fomc_meeting"
+  ],
+  "target": "vol_21d"
+}
