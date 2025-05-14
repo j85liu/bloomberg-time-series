@@ -1,0 +1,2 @@
+index_name,num_samples,input_timesteps,num_features,forecast_horizon
+VIX,8844,60,23,21
